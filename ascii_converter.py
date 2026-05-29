@@ -11,7 +11,7 @@ def grayify(image):
     return image.convert("L")
 
 def pixels_to_ascii(image):
-    pixels = image.getdata()
+    pixels = image.get_flattened_data()
     characters = "".join([ASCII_CHARS[pixel // 25] for pixel in pixels])
     return characters
 
@@ -30,7 +30,7 @@ def convert_image_to_ascii(image_path, new_width=100):
 
     return ascii_image
 
-image_path = "image_path.jpg"  # Replace with your image path
+image_path = "IMG 4344.jpg"  # Replace with your image path
 ascii_art = convert_image_to_ascii(image_path, new_width=100)
 
 #save result to a text file 
