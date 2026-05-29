@@ -1,4 +1,4 @@
-from PIL import Image
+from PIL import Image, ImageOps
 
 ASCII_CHARS = ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", "."]
 def resize_image(image, new_width=100):
@@ -18,6 +18,7 @@ def pixels_to_ascii(image):
 def convert_image_to_ascii(image_path, new_width=100):
     try:
         image = Image.open(image_path)
+        image = ImageOps.exif_transpose(image)
     except Exception as e:
         print(f"Unable to open image file {image_path}. Error: {e}")
         return
