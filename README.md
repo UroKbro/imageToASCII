@@ -33,19 +33,21 @@ python -m pip install pillow
 
 ## Usage
 
-The script currently uses a hardcoded image path inside [ascii_converter.py](ascii_converter.py):
-
-```python
-image_path = "image_path.jpg"
-```
-
-Replace that value with the image you want to convert, then run:
+Run the script by passing the image path as an argument:
 
 ```bash
-python ascii_converter.py
+python ascii_converter.py path/to/your/image.jpg
 ```
 
-The ASCII output will be saved to `ascii_image.txt` in the project folder.
+### Options
+
+*   `--width`: Set the width of the ASCII art (default is 100).
+*   `--output`: Specify a custom output file (default is `ascii_image.txt`).
+
+Example:
+```bash
+python ascii_converter.py my_photo.jpg --width 150 --output my_art.txt
+```
 
 ## Project Files
 

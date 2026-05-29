@@ -1,4 +1,5 @@
 from PIL import Image, ImageOps
+import argparse
 
 ASCII_CHARS = ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", "."]
 def resize_image(image, new_width=100):
@@ -30,10 +31,21 @@ def convert_image_to_ascii(image_path, new_width=100):
 
     return ascii_image
 
-image_path = "IMG 4344.jpg"  # Replace with your image path
-ascii_art = convert_image_to_ascii(image_path, new_width=100)
+def main():
+    parser = argparse.ArgumentParser(description="Convert images to ASCII art")
+    parser.add_argument("path", help="Path to the image file")
+    parser.add_argument("--width", type=int, default=100, help="Width of the ASCII art (default: 100)")
+    parser.add_argument("--output", default="ascii_image.txt", help="Output file (default: ascii_image.txt)")
+    
+    args = parser.parse_args()
+    
+    ascii_art = convert_image_to_ascii(args.path, new_width=args.width)
+    
+    if ascii_art:
+        with open(args.output, "w") as f:
+            f.write(ascii_art)
+        print(f"Success! ASCII art saved to {args.output}")
 
-#save result to a text file 
-with open ("ascii_image.txt", "w") as f:
-    f.write(ascii_art)
+if __name__ == "__main__":
+    main()
     
