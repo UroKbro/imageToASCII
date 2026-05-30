@@ -1,7 +1,12 @@
 from PIL import Image, ImageOps
 import argparse
+from colorama import Style, init
+
+# Initialize colorama for Windows support
+init()
 
 ASCII_CHARS = ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", "."]
+
 def resize_image(image, new_width=100):
     width, height = image.size
     aspect_ratio = height / width
@@ -11,12 +16,32 @@ def resize_image(image, new_width=100):
 def grayify(image):
     return image.convert("L")
 
-def pixels_to_ascii(image):
-    pixels = image.get_flattened_data()
-    characters = "".join([ASCII_CHARS[pixel // 25] for pixel in pixels])
-    return characters
+def get_color_escape(r, g, b):
+    return f"\033[38;2;{r};{g};{b}m"
 
-def convert_image_to_ascii(image_path, new_width=100):
+def pixels_to_ascii(image, color_image=None):
+    pixels = list(image.getdata())
+    width, height = image.size
+    
+    if color_image:
+        color_pixels = list(color_image.getdata())
+        lines = []
+        for y in range(height):
+            line = ""
+            for x in range(width):
+                i = y * width + x
+                # Get RGB values (ignoring alpha if present)
+                rgb = color_pixels[i][:3]
+                char = ASCII_CHARS[pixels[i] // 25]
+                line += f"{get_color_escape(*rgb)}{char}"
+            lines.append(line + Style.RESET_ALL)
+        return "\n".join(lines)
+    else:
+        characters = "".join([ASCII_CHARS[pixel // 25] for pixel in pixels])
+        ascii_image = "\n".join([characters[index:(index + width)] for index in range(0, len(characters), width)])
+        return ascii_image
+
+def convert_image_to_ascii(image_path, new_width=100, color=False):
     try:
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image)
@@ -24,28 +49,38 @@ def convert_image_to_ascii(image_path, new_width=100):
         print(f"Unable to open image file {image_path}. Error: {e}")
         return
 
-    new_image_data = pixels_to_ascii(grayify(resize_image(image, new_width)))
-    # Format the string into lines matching the new width
-    pixel_count = len(new_image_data)
-    ascii_image = "\n".join([new_image_data[index:(index + new_width)] for index in range(0, pixel_count, new_width)])
-
-    return ascii_image
+    resized_image = resize_image(image, new_width)
+    grayscale_image = grayify(resized_image)
+    
+    if color:
+        # We need the original color image in the same resolution
+        return pixels_to_ascii(grayscale_image, resized_image.convert("RGB"))
+    else:
+        return pixels_to_ascii(grayscale_image)
 
 def main():
     parser = argparse.ArgumentParser(description="Convert images to ASCII art")
     parser.add_argument("path", help="Path to the image file")
     parser.add_argument("--width", type=int, default=100, help="Width of the ASCII art (default: 100)")
     parser.add_argument("--output", default="ascii_image.txt", help="Output file (default: ascii_image.txt)")
+    parser.add_argument("--color", action="store_true", help="Enable colored output (terminal only)")
     
     args = parser.parse_args()
     
-    ascii_art = convert_image_to_ascii(args.path, new_width=args.width)
+    ascii_art = convert_image_to_ascii(args.path, new_width=args.width, color=args.color)
     
     if ascii_art:
+        # Always output to terminal if color is requested
+        if args.color:
+            print(ascii_art)
+            
         with open(args.output, "w") as f:
             f.write(ascii_art)
-        print(f"Success! ASCII art saved to {args.output}")
+            
+        if args.color:
+            print(f"\nSuccess! ASCII art saved to {args.output} (Note: color characters preserved in file)")
+        else:
+            print(f"Success! ASCII art saved to {args.output}")
 
 if __name__ == "__main__":
     main()
-    

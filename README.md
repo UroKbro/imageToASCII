@@ -10,11 +10,12 @@ The script in [ascii_converter.py](ascii_converter.py) opens an image, turns it 
 
 - Python 3.14
 - Pillow
+- colorama
 
-Install Pillow inside your virtual environment:
+Install dependencies inside your virtual environment:
 
 ```bash
-python -m pip install pillow
+python -m pip install pillow colorama
 ```
 
 ## Setup
@@ -24,10 +25,10 @@ python -m pip install pillow
 ```bash
 source .venv/bin/activate
 ```
-
-2. Install the dependency:
+ies:
 
 ```bash
+python -m pip install pillow colorama
 python -m pip install pillow
 ```
 
@@ -43,10 +44,11 @@ python ascii_converter.py path/to/your/image.jpg
 
 *   `--width`: Set the width of the ASCII art (default is 100).
 *   `--output`: Specify a custom output file (default is `ascii_image.txt`).
+*   `--color`: Enable colored output in the terminal.
 
 Example:
 ```bash
-python ascii_converter.py my_photo.jpg --width 150 --output my_art.txt
+python ascii_converter.py my_photo.jpg --width 150 --color
 ```
 
 ## Project Files
@@ -57,5 +59,6 @@ python ascii_converter.py my_photo.jpg --width 150 --output my_art.txt
 
 ## Notes
 
-- If you want to keep the generated ASCII output, copy it before running the script again.
+- The `--color` option uses 24-bit ANSI escape codes, which work in most modern terminals (VS Code terminal, iTerm2, etc.).
+- When saving color output to a file, the file will contain ANSI escape codes. To view it with color later, use `cat` in your terminal: `cat ascii_image.txt`
 - If you want to use a different input image, update the `image_path` variable in the script.
