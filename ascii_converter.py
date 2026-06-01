@@ -1,4 +1,4 @@
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageEnhance
 import argparse
 from colorama import Style, init
 
@@ -53,13 +53,19 @@ def pixels_to_ascii(image, theme="default", color_image=None):
         ascii_image = "\n".join(["".join(ascii_chars[index:(index + width)]) for index in range(0, len(ascii_chars), width)])
         return ascii_image
 
-def convert_image_to_ascii(image_path, new_width=100, color=False, theme="default"):
+def convert_image_to_ascii(image_path, new_width=100, color=False, theme="default", contrast=1.0, brightness=1.0):
     try:
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image)
     except Exception as e:
         print(f"Unable to open image file {image_path}. Error: {e}")
         return
+
+    # Apply enhancements
+    if brightness != 1.0:
+        image = ImageEnhance.Brightness(image).enhance(brightness)
+    if contrast != 1.0:
+        image = ImageEnhance.Contrast(image).enhance(contrast)
 
     resized_image = resize_image(image, new_width)
     grayscale_image = grayify(resized_image)
@@ -77,10 +83,19 @@ def main():
     parser.add_argument("--output", default="ascii_image.txt", help="Output file (default: ascii_image.txt)")
     parser.add_argument("--color", action="store_true", help="Enable colored output (terminal only)")
     parser.add_argument("--theme", choices=THEMES.keys(), default="default", help="Theme for ASCII characters")
+    parser.add_argument("--contrast", type=float, default=1.5, help="Contrast enhancement factor (default: 1.5)")
+    parser.add_argument("--brightness", type=float, default=1.0, help="Brightness enhancement factor (default: 1.0)")
     
     args = parser.parse_args()
     
-    ascii_art = convert_image_to_ascii(args.path, new_width=args.width, color=args.color, theme=args.theme)
+    ascii_art = convert_image_to_ascii(
+        args.path, 
+        new_width=args.width, 
+        color=args.color, 
+        theme=args.theme,
+        contrast=args.contrast,
+        brightness=args.brightness
+    )
     
     if ascii_art:
         # Always output to terminal if color is requested
