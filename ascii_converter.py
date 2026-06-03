@@ -58,17 +58,28 @@ def pixels_to_ascii(image, theme="default", color_image=None, avoid_space=False)
             color_pixels = list(color_image.getdata())
         
         lines = []
+        last_color = None
         for y in range(height):
-            line = ""
+            line_chars = []
             for x in range(width):
                 i = y * width + x
                 # Get RGB values (ignoring alpha if present)
-                rgb = color_pixels[i][:3]
+                r, g, b = color_pixels[i][:3]
+                
+                # Quantize colors to compress consecutive identical colors in the terminal
+                quantized_color = ((r // 16) * 16, (g // 16) * 16, (b // 16) * 16)
+                
                 # Scale pixel value (0-255) to the number of available characters
                 char_idx = int((pixels[i] / 255) * (num_chars - 1))
                 char = chars[char_idx]
-                line += f"{get_color_escape(*rgb)}{char}"
-            lines.append(line + Style.RESET_ALL)
+                
+                if quantized_color != last_color:
+                    line_chars.append(f"{get_color_escape(*quantized_color)}{char}")
+                    last_color = quantized_color
+                else:
+                    line_chars.append(char)
+            lines.append("".join(line_chars) + Style.RESET_ALL)
+            last_color = None # Reset at the end of line because of Style.RESET_ALL
         return "\n".join(lines)
     else:
         # Scale pixel values to character set length
@@ -330,22 +341,17 @@ def run_webcam_ascii(
             sys.stdout.write("\033[H")
 
             lines = ascii_art.splitlines()
-            if lines:
-                current_cols = max(len(line) for line in lines)
-            else:
-                current_cols = 0
-
-            padded_cols = max(current_cols, last_cols)
-            padded_lines = [line.ljust(padded_cols) for line in lines]
+            # Append Clear to End of Line to avoid manual space padding which breaks with ANSI codes
+            padded_lines = [line + "\033[K" for line in lines]
+            
             if len(padded_lines) < last_rows:
-                padded_lines.extend([" " * padded_cols] * (last_rows - len(padded_lines)))
+                padded_lines.extend(["\033[K"] * (last_rows - len(padded_lines)))
 
             sys.stdout.write("\n".join(padded_lines))
             sys.stdout.write("\033[J")
             sys.stdout.flush()
 
             last_rows = len(padded_lines)
-            last_cols = padded_cols
 
             if writer is not None:
                 record_ascii = convert_image_to_ascii_image(
@@ -423,14 +429,12 @@ def main():
         parser.error("--html is not supported in --webcam mode")
 
     if args.webcam:
-        if args.color:
-            print("Webcam mode is monochrome only. Ignoring --color.")
         run_webcam_ascii(
             camera_index=args.camera,
             new_width=args.width,
             height_scale=args.height_scale,
-            color=False,
-            theme=active_theme,
+            color=args.color,
+             theme=active_theme,
             contrast=args.contrast,
             brightness=args.brightness,
             edges=args.edges,
