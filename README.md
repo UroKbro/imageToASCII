@@ -1,35 +1,25 @@
 # Image to ASCII
 
-Convert an image into plain text ASCII art.
+A powerful Python tool to convert images into beautiful ASCII art, supporting color, custom themes, edge detection, and HTML export.
 
-## What It Does
+## Features
 
-The script in [ascii_converter.py](ascii_converter.py) opens an image, turns it into grayscale, maps the pixels to ASCII characters, and writes the result to `ascii_image.txt`.
+- **Custom Themes**: Multiple character sets (default, simple, complex, binary, blocks, lines).
+- **Color Support**: True-color terminal output and HTML export.
+- **Image Enhancement**: Adjustable contrast and brightness.
+- **Edge Detection**: Create "line drawing" versions of your images.
+- **HTML Export**: Save high-fidelity colored ASCII art as shareable web pages.
 
 ## Requirements
 
-- Python 3.14
-- Pillow
+- Python 3.10+
+- Pillow (PIL)
 - colorama
 
-Install dependencies inside your virtual environment:
+Install dependencies:
 
 ```bash
 python -m pip install pillow colorama
-```
-
-## Setup
-
-1. Activate the virtual environment:
-
-```bash
-source .venv/bin/activate
-```
-ies:
-
-```bash
-python -m pip install pillow colorama
-python -m pip install pillow
 ```
 
 ## Usage
@@ -42,12 +32,39 @@ python ascii_converter.py path/to/your/image.jpg
 
 ### Options
 
-*   `--width`: Set the width of the ASCII art (default is 100).
-*   `--output`: Specify a custom output file (default is `ascii_image.txt`).
-*   `--color`: Enable colored output in the terminal.
+| Alternative | Description | Default |
+| :--- | :--- | :--- |
+| `--width` | Width of the ASCII art | `100` |
+| `--output` | Custom output file path | `ascii_image.txt` |
+| `--color` | Enable colored output | `False` |
+| `--theme` | character set (`default`, `simple`, `complex`, `binary`, `blocks`, `lines`) | `default` |
+| `--contrast` | Contrast enhancement factor | `1.5` |
+| `--brightness`| Brightness enhancement factor | `1.0` |
+| `--edges` | Apply edge detection (best for line art) | `False` |
+| `--html` | Export to a shareable HTML file | `False` |
 
-Example:
+### Examples
+
+**Colored Output in Terminal:**
 ```bash
+python ascii_converter.py image.jpg --color
+```
+
+**Line Art (Edge Detection) with Custom Width:**
+```bash
+python ascii_converter.py image.jpg --edges --width 150
+```
+
+**High-Fidelity Colored HTML Export:**
+```bash
+python ascii_converter.py image.jpg --color --html --contrast 2.0
+```
+
+**Binary Style conversion:**
+```bash
+python ascii_converter.py image.jpg --theme binary --width 80
+```
+
 python ascii_converter.py my_photo.jpg --width 150 --color
 ```
 
