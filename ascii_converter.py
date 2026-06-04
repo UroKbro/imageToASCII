@@ -314,6 +314,8 @@ def run_webcam_ascii(
                 key = sys.stdin.read(1)
                 if key in ("q", "Q"):
                     break
+                elif key in ("c", "C"):
+                    color = not color
 
             start_time = time.time()
             ret, frame = cap.read()
@@ -434,7 +436,7 @@ def main():
             new_width=args.width,
             height_scale=args.height_scale,
             color=args.color,
-             theme=active_theme,
+            theme=active_theme,
             contrast=args.contrast,
             brightness=args.brightness,
             edges=args.edges,
