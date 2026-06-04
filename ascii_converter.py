@@ -1,9 +1,11 @@
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageDraw, ImageFont
 import argparse
+import random
 import select
 import signal
 import sys
 import termios
+import threading
 import time
 import tty
 from colorama import Style, init
@@ -21,11 +23,32 @@ THEMES = {
     "lines": ["#", "+", "/", "\\", "|", "-", "_", ".", " "]
 }
 
+BRAILLE_DOT_BITS = {
+    (0, 0): 0x01,  # dot 1
+    (0, 1): 0x02,  # dot 2
+    (0, 2): 0x04,  # dot 3
+    (0, 3): 0x40,  # dot 7
+    (1, 0): 0x08,  # dot 4
+    (1, 1): 0x10,  # dot 5
+    (1, 2): 0x20,  # dot 6
+    (1, 3): 0x80,  # dot 8
+}
+
 def resize_image(image, new_width=100, height_scale=0.55):
     width, height = image.size
     aspect_ratio = height / width
     new_height = int(aspect_ratio * new_width * height_scale)  # Adjust for font aspect ratio
     return image.resize((new_width, new_height))
+
+def resize_image_for_braille(image, new_width=100, height_scale=1.0):
+    width, height = image.size
+    aspect_ratio = height / width
+    target_width = max(2, new_width * 2)
+    target_height = int(aspect_ratio * target_width * height_scale)
+    target_height = max(4, target_height - (target_height % 4))
+    if target_height <= 0:
+        target_height = 4
+    return image.resize((target_width, target_height))
 
 def grayify(image):
     return image.convert("L")
@@ -40,22 +63,222 @@ def normalize_theme_chars(theme, avoid_space=False):
             chars = chars[:-1]
     return chars
 
+def _get_flat_pixels(image):
+    if hasattr(image, "get_flattened_data"):
+        return list(image.get_flattened_data())
+    return list(image.getdata())
+
+def _crop_to_braille_grid(image):
+    width, height = image.size
+    crop_width = width - (width % 2)
+    crop_height = height - (height % 4)
+    if crop_width != width or crop_height != height:
+        image = image.crop((0, 0, crop_width, crop_height))
+    return image
+
+def pixels_to_braille(image, color_image=None, threshold=128):
+    image = _crop_to_braille_grid(image)
+    width, height = image.size
+    pixels = _get_flat_pixels(image)
+
+    if color_image is not None:
+        color_image = _crop_to_braille_grid(color_image)
+        color_pixels = _get_flat_pixels(color_image)
+    else:
+        color_pixels = None
+
+    lines = []
+    for y in range(0, height, 4):
+        line_chars = []
+        last_color = None
+        for x in range(0, width, 2):
+            mask = 0
+            r_sum = g_sum = b_sum = 0
+            for dy in range(4):
+                for dx in range(2):
+                    idx = (y + dy) * width + (x + dx)
+                    if pixels[idx] < threshold:
+                        mask |= BRAILLE_DOT_BITS[(dx, dy)]
+                    if color_pixels is not None:
+                        r, g, b = color_pixels[idx][:3]
+                        r_sum += r
+                        g_sum += g
+                        b_sum += b
+
+            char = chr(0x2800 + mask)
+            if color_pixels is not None:
+                r = r_sum // 8
+                g = g_sum // 8
+                b = b_sum // 8
+                quantized_color = ((r // 16) * 16, (g // 16) * 16, (b // 16) * 16)
+                if quantized_color != last_color:
+                    line_chars.append(f"{get_color_escape(*quantized_color)}{char}")
+                    last_color = quantized_color
+                else:
+                    line_chars.append(char)
+            else:
+                line_chars.append(char)
+        if color_pixels is not None:
+            lines.append("".join(line_chars) + Style.RESET_ALL)
+        else:
+            lines.append("".join(line_chars))
+    return "\n".join(lines)
+
+def pixels_to_braille_html(image, color_image=None, threshold=128):
+    image = _crop_to_braille_grid(image)
+    width, height = image.size
+    pixels = _get_flat_pixels(image)
+
+    if color_image is not None:
+        color_image = _crop_to_braille_grid(color_image)
+        color_pixels = _get_flat_pixels(color_image)
+    else:
+        color_pixels = None
+
+    html_template = """
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ background-color: #000; color: #fff; font-family: 'Courier New', Courier, monospace; line-height: 1.0; font-size: 8px; }}
+        pre {{ white-space: pre; }}
+    </style>
+</head>
+<body>
+    <pre>
+{content}
+    </pre>
+</body>
+</html>
+"""
+
+    lines = []
+    for y in range(0, height, 4):
+        line = ""
+        for x in range(0, width, 2):
+            mask = 0
+            r_sum = g_sum = b_sum = 0
+            for dy in range(4):
+                for dx in range(2):
+                    idx = (y + dy) * width + (x + dx)
+                    if pixels[idx] < threshold:
+                        mask |= BRAILLE_DOT_BITS[(dx, dy)]
+                    if color_pixels is not None:
+                        r, g, b = color_pixels[idx][:3]
+                        r_sum += r
+                        g_sum += g
+                        b_sum += b
+
+            char = chr(0x2800 + mask)
+            if color_pixels is not None:
+                r = r_sum // 8
+                g = g_sum // 8
+                b = b_sum // 8
+                line += f'<span style="color: rgb({r},{g},{b})">{char}</span>'
+            else:
+                line += char
+        lines.append(line)
+
+    return html_template.format(content="\n".join(lines))
+
+def apply_glitch_effects(lines, intensity=0.25, max_shift=10, slice_height=2, scramble_prob=0.03, rng=None):
+    if intensity <= 0 or not lines:
+        return lines
+
+    rng = rng or random
+    out = list(lines)
+    slice_count = max(1, int(len(out) * intensity))
+
+    for _ in range(slice_count):
+        start = rng.randint(0, max(0, len(out) - 1))
+        height = rng.randint(1, max(1, slice_height))
+        shift = rng.randint(-max_shift, max_shift)
+        end = min(len(out), start + height)
+        for i in range(start, end):
+            line = out[i]
+            if shift > 0:
+                line = (" " * shift) + line
+            elif shift < 0:
+                line = line[-shift:] if len(line) > -shift else ""
+            out[i] = line
+
+    if scramble_prob > 0:
+        for i, line in enumerate(out):
+            if "\033[" in line:
+                continue
+            if rng.random() < (scramble_prob * intensity):
+                chars = list(line)
+                rng.shuffle(chars)
+                out[i] = "".join(chars)
+
+    return out
+
+class AudioLevelMeter:
+    def __init__(self, device=None, samplerate=44100, blocksize=1024):
+        self.available = False
+        self.error = None
+        self._level = 0.0
+        self._lock = threading.Lock()
+        self._stream = None
+        try:
+            import numpy as np
+            import sounddevice as sd
+        except Exception as exc:
+            self.error = str(exc)
+            return
+
+        self._np = np
+        self._sd = sd
+        self.available = True
+        self._device = device
+        self._samplerate = samplerate
+        self._blocksize = blocksize
+
+    def start(self):
+        if not self.available:
+            return False
+
+        def callback(indata, _frames, _time, _status):
+            rms = float(self._np.sqrt(self._np.mean(indata ** 2)))
+            level = min(1.0, rms * 10.0)
+            with self._lock:
+                self._level = (self._level * 0.8) + (level * 0.2)
+
+        try:
+            self._stream = self._sd.InputStream(
+                device=self._device,
+                channels=1,
+                samplerate=self._samplerate,
+                blocksize=self._blocksize,
+                callback=callback,
+            )
+            self._stream.start()
+            return True
+        except Exception as exc:
+            self.error = str(exc)
+            self.available = False
+            return False
+
+    def get_level(self):
+        with self._lock:
+            return self._level
+
+    def stop(self):
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
 def pixels_to_ascii(image, theme="default", color_image=None, avoid_space=False):
     # Use get_flattened_data if available (Pillow 11+), else getdata
-    if hasattr(image, 'get_flattened_data'):
-        pixels = list(image.get_flattened_data())
-    else:
-        pixels = list(image.getdata())
+    pixels = _get_flat_pixels(image)
     
     width, height = image.size
     chars = normalize_theme_chars(theme, avoid_space=avoid_space)
     num_chars = len(chars)
     
     if color_image:
-        if hasattr(color_image, 'get_flattened_data'):
-            color_pixels = list(color_image.get_flattened_data())
-        else:
-            color_pixels = list(color_image.getdata())
+        color_pixels = _get_flat_pixels(color_image)
         
         lines = []
         last_color = None
@@ -88,10 +311,7 @@ def pixels_to_ascii(image, theme="default", color_image=None, avoid_space=False)
         return ascii_image
 
 def pixels_to_html(image, theme="default", color_image=None, avoid_space=False):
-    if hasattr(image, 'get_flattened_data'):
-        pixels = list(image.get_flattened_data())
-    else:
-        pixels = list(image.getdata())
+    pixels = _get_flat_pixels(image)
         
     width, height = image.size
     chars = normalize_theme_chars(theme, avoid_space=avoid_space)
@@ -115,10 +335,7 @@ def pixels_to_html(image, theme="default", color_image=None, avoid_space=False):
 """
     
     if color_image:
-        if hasattr(color_image, 'get_flattened_data'):
-            color_pixels = list(color_image.get_flattened_data())
-        else:
-            color_pixels = list(color_image.getdata())
+        color_pixels = _get_flat_pixels(color_image)
     else:
         color_pixels = None
     lines = []
@@ -157,7 +374,9 @@ def convert_image_to_ascii_image(
     edge_blur=0.5,
     edge_contrast=3.0,
     edge_brightness=1.5,
-    avoid_space=False
+    avoid_space=False,
+    braille=False,
+    braille_threshold=128
 ):
     # Apply enhancements
     if brightness != 1.0:
@@ -185,13 +404,24 @@ def convert_image_to_ascii_image(
         edge_image = ImageEnhance.Brightness(edge_image).enhance(edge_brightness)
         image = edge_image
 
-    resized_image = resize_image(image, new_width, height_scale=height_scale)
-    grayscale_image = grayify(resized_image)
+    if braille:
+        resized_image = resize_image_for_braille(image, new_width, height_scale=height_scale)
+        grayscale_image = grayify(resized_image)
+    else:
+        resized_image = resize_image(image, new_width, height_scale=height_scale)
+        grayscale_image = grayify(resized_image)
 
     if export_html:
-        color_data = resize_image(source_image, new_width, height_scale=height_scale).convert("RGB") if color else None
-        return pixels_to_html(grayscale_image, theme=theme, color_image=color_data, avoid_space=avoid_space)
+        if braille:
+            color_data = resize_image_for_braille(source_image, new_width, height_scale=height_scale).convert("RGB") if color else None
+            return pixels_to_braille_html(grayscale_image, color_image=color_data, threshold=braille_threshold)
+        else:
+            color_data = resize_image(source_image, new_width, height_scale=height_scale).convert("RGB") if color else None
+            return pixels_to_html(grayscale_image, theme=theme, color_image=color_data, avoid_space=avoid_space)
 
+    if braille:
+        color_data = resize_image_for_braille(source_image, new_width, height_scale=height_scale).convert("RGB") if color else None
+        return pixels_to_braille(grayscale_image, color_image=color_data, threshold=braille_threshold)
     if color:
         # Use the source image for color data
         color_data = resize_image(source_image, new_width, height_scale=height_scale).convert("RGB")
@@ -199,7 +429,7 @@ def convert_image_to_ascii_image(
     else:
         return pixels_to_ascii(grayscale_image, theme=theme, avoid_space=avoid_space)
 
-def convert_image_to_ascii(image_path, new_width=100, height_scale=0.55, color=False, theme="default", contrast=1.0, brightness=1.0, edges=False, export_html=False, avoid_space=False):
+def convert_image_to_ascii(image_path, new_width=100, height_scale=0.55, color=False, theme="default", contrast=1.0, brightness=1.0, edges=False, export_html=False, avoid_space=False, braille=False, braille_threshold=128):
     try:
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image)
@@ -217,7 +447,9 @@ def convert_image_to_ascii(image_path, new_width=100, height_scale=0.55, color=F
         brightness=brightness,
         edges=edges,
         export_html=export_html,
-        avoid_space=avoid_space
+        avoid_space=avoid_space,
+        braille=braille,
+        braille_threshold=braille_threshold
     )
 
 def render_ascii_frame(ascii_art, font):
@@ -255,7 +487,17 @@ def run_webcam_ascii(
     record_path=None,
     record_fps=None,
     record_seconds=None,
-    avoid_space=True
+    avoid_space=True,
+    braille=False,
+    braille_threshold=128,
+    glitch=False,
+    glitch_intensity=0.25,
+    glitch_slice_height=2,
+    glitch_max_shift=10,
+    glitch_scramble=0.03,
+    audio_reactive=False,
+    audio_gain=1.5,
+    audio_device=None
 ):
     try:
         import cv2
@@ -291,6 +533,15 @@ def run_webcam_ascii(
     last_rows = 0
     last_cols = 0
     stop_requested = {"value": False}
+
+    audio_meter = None
+    if audio_reactive:
+        audio_meter = AudioLevelMeter(device=audio_device)
+        if not audio_meter.start():
+            error_msg = audio_meter.error or "Unknown audio error"
+            print(f"Audio reactivity disabled: {error_msg}")
+            audio_meter = None
+            audio_reactive = False
 
     def handle_sigint(_signum, _frame):
         stop_requested["value"] = True
@@ -337,8 +588,24 @@ def run_webcam_ascii(
                 edge_blur=edge_blur,
                 edge_contrast=edge_contrast,
                 edge_brightness=edge_brightness,
-                avoid_space=avoid_space
+                avoid_space=avoid_space,
+                braille=braille,
+                braille_threshold=braille_threshold
             )
+
+            if glitch or audio_reactive:
+                audio_level = audio_meter.get_level() if audio_meter else 0.0
+                intensity = min(1.0, glitch_intensity + (audio_level * audio_gain))
+                max_shift = int(glitch_max_shift + (audio_level * glitch_max_shift))
+                lines = ascii_art.splitlines()
+                lines = apply_glitch_effects(
+                    lines,
+                    intensity=intensity,
+                    max_shift=max_shift,
+                    slice_height=glitch_slice_height,
+                    scramble_prob=glitch_scramble,
+                )
+                ascii_art = "\n".join(lines)
 
             sys.stdout.write("\033[H")
 
@@ -369,7 +636,9 @@ def run_webcam_ascii(
                     edge_blur=edge_blur,
                     edge_contrast=edge_contrast,
                     edge_brightness=edge_brightness,
-                    avoid_space=avoid_space
+                    avoid_space=avoid_space,
+                    braille=braille,
+                    braille_threshold=braille_threshold
                 )
                 frame_img = render_ascii_frame(record_ascii, record_font)
                 if frame_img is not None:
@@ -387,6 +656,8 @@ def run_webcam_ascii(
         cap.release()
         if writer is not None:
             writer.close()
+        if audio_meter is not None:
+            audio_meter.stop()
         if old_term is not None:
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_term)
         signal.signal(signal.SIGINT, old_handler)
@@ -400,10 +671,12 @@ def main():
     parser = argparse.ArgumentParser(description="Convert images to ASCII art")
     parser.add_argument("path", nargs="?", help="Path to the image file")
     parser.add_argument("--width", type=int, default=100, help="Width of the ASCII art (default: 100)")
-    parser.add_argument("--height-scale", type=float, default=0.55, help="Height scaling factor for ASCII (default: 0.55)")
+    parser.add_argument("--height-scale", type=float, default=None, help="Height scaling factor for ASCII (default: 0.55, or 1.0 in braille mode)")
     parser.add_argument("--output", default="ascii_image.txt", help="Output file (default: ascii_image.txt)")
     parser.add_argument("--color", action="store_true", help="Enable colored output (terminal only)")
     parser.add_argument("--theme", choices=THEMES.keys(), default="default", help="Theme for ASCII characters")
+    parser.add_argument("--braille", action="store_true", help="Enable high-resolution braille mode (2x4 pixel mapping)")
+    parser.add_argument("--braille-threshold", type=int, default=128, help="Threshold for braille dots (0-255, default: 128)")
     parser.add_argument("--contrast", type=float, default=1.5, help="Contrast enhancement factor (default: 1.5)")
     parser.add_argument("--brightness", type=float, default=1.0, help="Brightness enhancement factor (default: 1.0)")
     parser.add_argument("--edges", action="store_true", help="Apply edge detection filter")
@@ -419,13 +692,27 @@ def main():
     parser.add_argument("--record", help="Record webcam ASCII output to a file (GIF/MP4) using imageio")
     parser.add_argument("--record-fps", type=int, help="FPS for recorded output (defaults to --fps)")
     parser.add_argument("--record-seconds", type=float, help="Record duration in seconds (default: unlimited)")
+    parser.add_argument("--glitch", action="store_true", help="Enable live glitch effects in webcam mode")
+    parser.add_argument("--glitch-intensity", type=float, default=0.25, help="Glitch intensity (default: 0.25)")
+    parser.add_argument("--glitch-slice-height", type=int, default=2, help="Max height of glitch slices (default: 2)")
+    parser.add_argument("--glitch-max-shift", type=int, default=10, help="Max horizontal shift for glitches (default: 10)")
+    parser.add_argument("--glitch-scramble", type=float, default=0.03, help="Chance to scramble a line (default: 0.03)")
+    parser.add_argument("--audio-reactive", action="store_true", help="Make glitches react to microphone input")
+    parser.add_argument("--audio-gain", type=float, default=1.5, help="Audio reactivity gain (default: 1.5)")
+    parser.add_argument("--audio-device", type=int, help="Audio input device index for reactivity")
     
     args = parser.parse_args()
+
+    height_scale = args.height_scale
+    if height_scale is None:
+        height_scale = 1.0 if args.braille else 0.55
     
     # If edges is enabled and theme is default, switch to lines theme for better results
     active_theme = args.theme
     if args.edges and active_theme == "default":
         active_theme = "lines"
+    if args.braille:
+        active_theme = "default"
 
     if args.webcam and args.html:
         parser.error("--html is not supported in --webcam mode")
@@ -434,7 +721,7 @@ def main():
         run_webcam_ascii(
             camera_index=args.camera,
             new_width=args.width,
-            height_scale=args.height_scale,
+            height_scale=height_scale,
             color=args.color,
             theme=active_theme,
             contrast=args.contrast,
@@ -448,7 +735,17 @@ def main():
             edge_brightness=args.edge_brightness,
             record_path=args.record,
             record_fps=args.record_fps,
-            record_seconds=args.record_seconds
+            record_seconds=args.record_seconds,
+            braille=args.braille,
+            braille_threshold=args.braille_threshold,
+            glitch=args.glitch,
+            glitch_intensity=args.glitch_intensity,
+            glitch_slice_height=args.glitch_slice_height,
+            glitch_max_shift=args.glitch_max_shift,
+            glitch_scramble=args.glitch_scramble,
+            audio_reactive=args.audio_reactive,
+            audio_gain=args.audio_gain,
+            audio_device=args.audio_device
         )
         return
 
@@ -463,13 +760,15 @@ def main():
     ascii_art = convert_image_to_ascii(
         args.path, 
         new_width=args.width,
-        height_scale=args.height_scale,
+        height_scale=height_scale,
         color=args.color, 
         theme=active_theme,
         contrast=args.contrast,
         brightness=args.brightness,
         edges=args.edges,
-        export_html=args.html
+        export_html=args.html,
+        braille=args.braille,
+        braille_threshold=args.braille_threshold
     )
     
     if ascii_art:
