@@ -213,6 +213,51 @@ def apply_glitch_effects(lines, intensity=0.25, max_shift=10, slice_height=2, sc
 
     return out
 
+def apply_matrix_effect(lines, drops, rows, cols):
+    import re
+    ansi_escape = re.compile(r'(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]')
+    
+    chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ*!@#$%"
+    out_lines = []
+    
+    while len(drops) < cols:
+        drops.append(random.randint(-rows, 0))
+        
+    for r in range(len(lines)):
+        clean_line = ansi_escape.sub('', lines[r])
+        new_line = ""
+        for c, char in enumerate(clean_line):
+            if c >= cols:
+                break
+            
+            is_silhouette = char not in [" ", ".", ",", "-", "'", "`"]
+            dist = drops[c] - r
+            
+            if is_silhouette:
+                if 0 <= dist < 10:
+                    new_line += f"\033[1;32m{char}\033[0m"
+                else:
+                    new_line += f"\033[32m{char}\033[0m"
+            else:
+                if 0 <= dist < 15:
+                    if dist == 0:
+                        new_line += f"\033[1;37m{random.choice(chars)}\033[0m"
+                    elif dist < 5:
+                        new_line += f"\033[1;32m{random.choice(chars)}\033[0m"
+                    else:
+                        new_line += f"\033[32m{random.choice(chars)}\033[0m"
+                else:
+                    new_line += " "
+        out_lines.append(new_line)
+        
+    for c in range(cols):
+        if random.random() < 0.8:
+            drops[c] += 1
+        if drops[c] - 15 > rows or random.random() < 0.01:
+            drops[c] = random.randint(-rows, 0)
+            
+    return out_lines
+
 class AudioLevelMeter:
     def __init__(self, device=None, samplerate=44100, blocksize=1024):
         self.available = False
@@ -497,7 +542,10 @@ def run_webcam_ascii(
     glitch_scramble=0.03,
     audio_reactive=False,
     audio_gain=1.5,
-    audio_device=None
+    audio_device=None,
+    motion_blur=False,
+    motion_blur_strength=0.5,
+    matrix_effect=False
 ):
     try:
         import cv2
@@ -533,6 +581,12 @@ def run_webcam_ascii(
     last_rows = 0
     last_cols = 0
     stop_requested = {"value": False}
+    
+    pan_x = 0
+    pan_y = 0
+    zoom_level = 1.0
+    prev_frame_float = None
+    matrix_drops = []
 
     audio_meter = None
     if audio_reactive:
@@ -563,15 +617,65 @@ def run_webcam_ascii(
 
             if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
                 key = sys.stdin.read(1)
-                if key in ("q", "Q"):
+                if key == '\x1b':
+                    if sys.stdin in select.select([sys.stdin], [], [], 0.01)[0]:
+                        seq1 = sys.stdin.read(1)
+                        if seq1 == '[' and sys.stdin in select.select([sys.stdin], [], [], 0.01)[0]:
+                            seq2 = sys.stdin.read(1)
+                            if seq2 == 'A': pan_y -= max(10, int(50 / zoom_level))
+                            elif seq2 == 'B': pan_y += max(10, int(50 / zoom_level))
+                            elif seq2 == 'C': pan_x += max(10, int(50 / zoom_level))
+                            elif seq2 == 'D': pan_x -= max(10, int(50 / zoom_level))
+                elif key in ("q", "Q"):
                     break
                 elif key in ("c", "C"):
                     color = not color
+                elif key in ("+", "="):
+                    zoom_level = min(10.0, zoom_level * 1.1)
+                elif key == "-":
+                    zoom_level = max(1.0, zoom_level / 1.1)
+                elif key == "0":
+                    zoom_level = 1.0
+                    pan_x = 0
+                    pan_y = 0
 
             start_time = time.time()
             ret, frame = cap.read()
             if not ret:
                 break
+
+            # --- Pan and Zoom ---
+            h, w = frame.shape[:2]
+            
+            # Calculate crop coordinates
+            crop_w = int(w / zoom_level)
+            crop_h = int(h / zoom_level)
+            
+            # Clamp pan
+            max_pan_x = max(0, (w - crop_w) // 2)
+            max_pan_y = max(0, (h - crop_h) // 2)
+            pan_x = max(-max_pan_x, min(max_pan_x, pan_x))
+            pan_y = max(-max_pan_y, min(max_pan_y, pan_y))
+            
+            center_x = w / 2 + pan_x
+            center_y = h / 2 + pan_y
+            
+            x1 = max(0, int(center_x - crop_w / 2))
+            y1 = max(0, int(center_y - crop_h / 2))
+            x2 = min(w, x1 + crop_w)
+            y2 = min(h, y1 + crop_h)
+            
+            frame = frame[y1:y2, x1:x2]
+            if frame.size > 0:
+                frame = cv2.resize(frame, (w, h))
+                
+            # --- Motion Blur ---
+            if motion_blur:
+                if prev_frame_float is None or prev_frame_float.shape != frame.shape:
+                    prev_frame_float = frame.astype(float)
+                else:
+                    cv2.accumulateWeighted(frame, prev_frame_float, 1.0 - motion_blur_strength)
+                frame = cv2.convertScaleAbs(prev_frame_float)
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(frame_rgb)
@@ -606,6 +710,14 @@ def run_webcam_ascii(
                     scramble_prob=glitch_scramble,
                 )
                 ascii_art = "\n".join(lines)
+                
+            if matrix_effect:
+                lines = ascii_art.splitlines()
+                if lines:
+                    art_rows = len(lines)
+                    art_cols = len(lines[0]) if art_rows > 0 else 0
+                    lines = apply_matrix_effect(lines, matrix_drops, art_rows, art_cols)
+                    ascii_art = "\n".join(lines)
 
             sys.stdout.write("\033[H")
 
@@ -700,6 +812,9 @@ def main():
     parser.add_argument("--audio-reactive", action="store_true", help="Make glitches react to microphone input")
     parser.add_argument("--audio-gain", type=float, default=1.5, help="Audio reactivity gain (default: 1.5)")
     parser.add_argument("--audio-device", type=int, help="Audio input device index for reactivity")
+    parser.add_argument("--motion-blur", action="store_true", help="Enable motion blur in webcam mode")
+    parser.add_argument("--motion-blur-strength", type=float, default=0.5, help="Motion blur strength (0.0 to 1.0, default 0.5)")
+    parser.add_argument("--matrix", action="store_true", help="Enable Matrix digital rain effect")
     
     args = parser.parse_args()
 
@@ -745,7 +860,10 @@ def main():
             glitch_scramble=args.glitch_scramble,
             audio_reactive=args.audio_reactive,
             audio_gain=args.audio_gain,
-            audio_device=args.audio_device
+            audio_device=args.audio_device,
+            motion_blur=args.motion_blur,
+            motion_blur_strength=args.motion_blur_strength,
+            matrix_effect=args.matrix
         )
         return
 

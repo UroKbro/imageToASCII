@@ -10,6 +10,9 @@ A powerful Python tool to convert images into beautiful ASCII art, supporting co
 - **Edge Detection**: Create "line drawing" versions of your images.
 - **HTML Export**: Save high-fidelity colored ASCII art as shareable web pages.
 - **Webcam Mode**: Render live ASCII video from your webcam in the terminal.
+- **Virtual Camera**: Live-zoom and pan around the ASCII webcam feed using keyboard controls.
+- **Matrix Drip Effect**: Falling green characters stream down and interact with your silhouette.
+- **Motion Blur**: Add cinematic frame blending to your webcam feed.
 - **Braille Mode**: 2x4 pixel Unicode Braille rendering for high-resolution output.
 - **Glitch + Audio Reactivity**: Live glitch effects with optional microphone-driven distortion.
 
@@ -72,6 +75,18 @@ python ascii_converter.py path/to/your/image.jpg
 | `--audio-reactive` | Make glitches react to microphone input | `False` |
 | `--audio-gain` | Audio reactivity gain | `1.5` |
 | `--audio-device` | Audio input device index for reactivity | (none) |
+| `--motion-blur` | Enable motion blur in webcam mode | `False` |
+| `--motion-blur-strength` | Motion blur strength (0.0 to 1.0) | `0.5` |
+| `--matrix` | Enable Matrix digital rain effect in webcam mode | `False` |
+
+### Keyboard Controls (Webcam Mode)
+
+- `q` / `Q`: Quit
+- `c` / `C`: Toggle color
+- `+` / `=`: Zoom in
+- `-`: Zoom out
+- `Arrow Keys`: Pan camera (when zoomed in)
+- `0`: Reset camera pan and zoom
 
 ### Examples
 
@@ -121,6 +136,16 @@ python ascii_converter.py image.jpg --braille --width 140
 **Live Glitch + Audio Reactivity:**
 ```bash
 python ascii_converter.py --webcam --glitch --audio-reactive --glitch-intensity 0.35
+```
+
+**Matrix Drip Effect:**
+```bash
+python ascii_converter.py --webcam --matrix
+```
+
+**Motion Blur Trail Effect:**
+```bash
+python ascii_converter.py --webcam --motion-blur --motion-blur-strength 0.8
 ```
 
 Press Ctrl+C to stop the webcam feed.
