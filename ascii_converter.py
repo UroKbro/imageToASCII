@@ -10,6 +10,11 @@ import time
 import tty
 from colorama import Style, init
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 # Initialize colorama for Windows support
 init()
 
@@ -314,13 +319,22 @@ class AudioLevelMeter:
             self._stream.close()
             self._stream = None
 
-def pixels_to_ascii(image, theme="default", color_image=None, avoid_space=False):
+def pixels_to_ascii(image, theme="default", color_image=None, avoid_space=False, theme_bg=None, blend_mask=None):
     # Use get_flattened_data if available (Pillow 11+), else getdata
     pixels = _get_flat_pixels(image)
     
     width, height = image.size
     chars = normalize_theme_chars(theme, avoid_space=avoid_space)
     num_chars = len(chars)
+    
+    if theme_bg and blend_mask:
+        chars_bg = normalize_theme_chars(theme_bg, avoid_space=avoid_space)
+        num_chars_bg = len(chars_bg)
+        mask_pixels = _get_flat_pixels(blend_mask)
+    else:
+        chars_bg = None
+        num_chars_bg = 0
+        mask_pixels = None
     
     if color_image:
         color_pixels = _get_flat_pixels(color_image)
@@ -338,8 +352,15 @@ def pixels_to_ascii(image, theme="default", color_image=None, avoid_space=False)
                 quantized_color = ((r // 16) * 16, (g // 16) * 16, (b // 16) * 16)
                 
                 # Scale pixel value (0-255) to the number of available characters
-                char_idx = int((pixels[i] / 255) * (num_chars - 1))
-                char = chars[char_idx]
+                if mask_pixels is not None and mask_pixels[i] >= 128:
+                    char_idx = int((pixels[i] / 255) * (num_chars - 1))
+                    char = chars[char_idx]
+                elif mask_pixels is not None:
+                    char_idx = int((pixels[i] / 255) * (num_chars_bg - 1))
+                    char = chars_bg[char_idx]
+                else:
+                    char_idx = int((pixels[i] / 255) * (num_chars - 1))
+                    char = chars[char_idx]
                 
                 if quantized_color != last_color:
                     line_chars.append(f"{get_color_escape(*quantized_color)}{char}")
@@ -351,16 +372,36 @@ def pixels_to_ascii(image, theme="default", color_image=None, avoid_space=False)
         return "\n".join(lines)
     else:
         # Scale pixel values to character set length
-        ascii_chars = [chars[int((pixel / 255) * (num_chars - 1))] for pixel in pixels]
+        ascii_chars = []
+        for i, pixel in enumerate(pixels):
+            if mask_pixels is not None and mask_pixels[i] >= 128:
+                char_idx = int((pixel / 255) * (num_chars - 1))
+                char = chars[char_idx]
+            elif mask_pixels is not None:
+                char_idx = int((pixel / 255) * (num_chars_bg - 1))
+                char = chars_bg[char_idx]
+            else:
+                char_idx = int((pixel / 255) * (num_chars - 1))
+                char = chars[char_idx]
+            ascii_chars.append(char)
         ascii_image = "\n".join(["".join(ascii_chars[index:(index + width)]) for index in range(0, len(ascii_chars), width)])
         return ascii_image
 
-def pixels_to_html(image, theme="default", color_image=None, avoid_space=False):
+def pixels_to_html(image, theme="default", color_image=None, avoid_space=False, theme_bg=None, blend_mask=None):
     pixels = _get_flat_pixels(image)
         
     width, height = image.size
     chars = normalize_theme_chars(theme, avoid_space=avoid_space)
     num_chars = len(chars)
+    
+    if theme_bg and blend_mask:
+        chars_bg = normalize_theme_chars(theme_bg, avoid_space=avoid_space)
+        num_chars_bg = len(chars_bg)
+        mask_pixels = _get_flat_pixels(blend_mask)
+    else:
+        chars_bg = None
+        num_chars_bg = 0
+        mask_pixels = None
     
     html_template = """
 <!DOCTYPE html>
@@ -389,8 +430,15 @@ def pixels_to_html(image, theme="default", color_image=None, avoid_space=False):
         line = ""
         for x in range(width):
             i = y * width + x
-            char_idx = int((pixels[i] / 255) * (num_chars - 1))
-            char = chars[char_idx]
+            if mask_pixels is not None and mask_pixels[i] >= 128:
+                char_idx = int((pixels[i] / 255) * (num_chars - 1))
+                char = chars[char_idx]
+            elif mask_pixels is not None:
+                char_idx = int((pixels[i] / 255) * (num_chars_bg - 1))
+                char = chars_bg[char_idx]
+            else:
+                char_idx = int((pixels[i] / 255) * (num_chars - 1))
+                char = chars[char_idx]
             
             # Escape HTML characters
             if char == "<": char = "&lt;"
@@ -421,7 +469,10 @@ def convert_image_to_ascii_image(
     edge_brightness=1.5,
     avoid_space=False,
     braille=False,
-    braille_threshold=128
+    braille_threshold=128,
+    theme_bg=None,
+    blend_mode="brightness",
+    blend_threshold=None
 ):
     # Apply enhancements
     if brightness != 1.0:
@@ -456,13 +507,27 @@ def convert_image_to_ascii_image(
         resized_image = resize_image(image, new_width, height_scale=height_scale)
         grayscale_image = grayify(resized_image)
 
+    # Generate blend mask if theme_bg is specified
+    blend_mask = None
+    if theme_bg and not braille:
+        if blend_threshold is None:
+            thresh = 120 if blend_mode == "brightness" else 30
+        else:
+            thresh = blend_threshold
+            
+        if blend_mode == "brightness":
+            blend_mask = grayscale_image.point(lambda p: 255 if p >= thresh else 0)
+        elif blend_mode == "edge":
+            edges_img = grayscale_image.filter(ImageFilter.FIND_EDGES)
+            blend_mask = edges_img.point(lambda p: 255 if p >= thresh else 0)
+
     if export_html:
         if braille:
             color_data = resize_image_for_braille(source_image, new_width, height_scale=height_scale).convert("RGB") if color else None
             return pixels_to_braille_html(grayscale_image, color_image=color_data, threshold=braille_threshold)
         else:
             color_data = resize_image(source_image, new_width, height_scale=height_scale).convert("RGB") if color else None
-            return pixels_to_html(grayscale_image, theme=theme, color_image=color_data, avoid_space=avoid_space)
+            return pixels_to_html(grayscale_image, theme=theme, color_image=color_data, avoid_space=avoid_space, theme_bg=theme_bg, blend_mask=blend_mask)
 
     if braille:
         color_data = resize_image_for_braille(source_image, new_width, height_scale=height_scale).convert("RGB") if color else None
@@ -470,11 +535,11 @@ def convert_image_to_ascii_image(
     if color:
         # Use the source image for color data
         color_data = resize_image(source_image, new_width, height_scale=height_scale).convert("RGB")
-        return pixels_to_ascii(grayscale_image, theme=theme, color_image=color_data, avoid_space=avoid_space)
+        return pixels_to_ascii(grayscale_image, theme=theme, color_image=color_data, avoid_space=avoid_space, theme_bg=theme_bg, blend_mask=blend_mask)
     else:
-        return pixels_to_ascii(grayscale_image, theme=theme, avoid_space=avoid_space)
+        return pixels_to_ascii(grayscale_image, theme=theme, avoid_space=avoid_space, theme_bg=theme_bg, blend_mask=blend_mask)
 
-def convert_image_to_ascii(image_path, new_width=100, height_scale=0.55, color=False, theme="default", contrast=1.0, brightness=1.0, edges=False, export_html=False, avoid_space=False, braille=False, braille_threshold=128):
+def convert_image_to_ascii(image_path, new_width=100, height_scale=0.55, color=False, theme="default", contrast=1.0, brightness=1.0, edges=False, export_html=False, avoid_space=False, braille=False, braille_threshold=128, theme_bg=None, blend_mode="brightness", blend_threshold=None):
     try:
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image)
@@ -494,8 +559,69 @@ def convert_image_to_ascii(image_path, new_width=100, height_scale=0.55, color=F
         export_html=export_html,
         avoid_space=avoid_space,
         braille=braille,
-        braille_threshold=braille_threshold
+        braille_threshold=braille_threshold,
+        theme_bg=theme_bg,
+        blend_mode=blend_mode,
+        blend_threshold=blend_threshold
     )
+
+def draw_face_props(pil_image, faces, prop_type):
+    if faces is None or len(faces) == 0 or prop_type == "none":
+        return pil_image
+
+    draw = ImageDraw.Draw(pil_image)
+    for (x, y, w, h) in faces:
+        if prop_type in ("sunglasses", "both"):
+            # Lenses
+            left_x1 = int(x + w * 0.18)
+            left_y1 = int(y + h * 0.35)
+            left_x2 = int(x + w * 0.46)
+            left_y2 = int(y + h * 0.48)
+            draw.rectangle([left_x1, left_y1, left_x2, left_y2], fill=(20, 20, 20), outline=(255, 0, 255), width=int(max(1, w * 0.02)))
+            
+            right_x1 = int(x + w * 0.54)
+            right_y1 = int(y + h * 0.35)
+            right_x2 = int(x + w * 0.82)
+            right_y2 = int(y + h * 0.48)
+            draw.rectangle([right_x1, right_y1, right_x2, right_y2], fill=(20, 20, 20), outline=(255, 0, 255), width=int(max(1, w * 0.02)))
+            
+            # Bridge
+            bridge_x1 = left_x2
+            bridge_y1 = int(y + h * 0.40)
+            bridge_x2 = right_x1
+            bridge_y2 = int(y + h * 0.40)
+            draw.line([bridge_x1, bridge_y1, bridge_x2, bridge_y2], fill=(255, 0, 255), width=int(max(1, w * 0.03)))
+            
+            # Temples
+            draw.line([int(x + w * 0.05), int(y + h * 0.38), left_x1, int(y + h * 0.38)], fill=(255, 0, 255), width=int(max(1, w * 0.02)))
+            draw.line([right_x2, int(y + h * 0.38), int(x + w * 0.95), int(y + h * 0.38)], fill=(255, 0, 255), width=int(max(1, w * 0.02)))
+            
+            # Glare reflections
+            glare_size = int(max(1, w * 0.03))
+            draw.ellipse([left_x1 + glare_size, left_y1 + glare_size, left_x1 + glare_size * 3, left_y1 + glare_size * 3], fill=(255, 255, 255))
+            draw.ellipse([right_x1 + glare_size, right_y1 + glare_size, right_x1 + glare_size * 3, right_y1 + glare_size * 3], fill=(255, 255, 255))
+
+        if prop_type in ("hat", "both"):
+            # Brim
+            brim_x1 = int(x - w * 0.12)
+            brim_y1 = int(y - h * 0.08)
+            brim_x2 = int(x + w * 1.12)
+            brim_y2 = int(y)
+            draw.rectangle([brim_x1, brim_y1, brim_x2, brim_y2], fill=(15, 15, 15), outline=(255, 255, 255), width=int(max(1, w * 0.015)))
+            
+            # Crown
+            crown_x1 = int(x + w * 0.12)
+            crown_y1 = int(y - h * 0.68)
+            crown_x2 = int(x + w * 0.88)
+            crown_y2 = brim_y1
+            draw.rectangle([crown_x1, crown_y1, crown_x2, crown_y2], fill=(25, 25, 25), outline=(255, 255, 255), width=int(max(1, w * 0.015)))
+            
+            # Ribbon
+            ribbon_y1 = int(y - h * 0.22)
+            ribbon_y2 = brim_y1
+            draw.rectangle([crown_x1, ribbon_y1, crown_x2, ribbon_y2], fill=(220, 20, 60))
+
+    return pil_image
 
 def render_ascii_frame(ascii_art, font):
     lines = ascii_art.splitlines()
@@ -545,7 +671,14 @@ def run_webcam_ascii(
     audio_device=None,
     motion_blur=False,
     motion_blur_strength=0.5,
-    matrix_effect=False
+    matrix_effect=False,
+    face_props="none",
+    theme_bg=None,
+    blend_mode="brightness",
+    blend_threshold=None,
+    ghost=False,
+    ghost_len=10,
+    ghost_decay=0.75
 ):
     try:
         import cv2
@@ -587,6 +720,21 @@ def run_webcam_ascii(
     zoom_level = 1.0
     prev_frame_float = None
     matrix_drops = []
+
+    face_cascade = None
+    def get_face_cascade():
+        nonlocal face_cascade
+        if face_cascade is None:
+            try:
+                cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+                face_cascade = cv2.CascadeClassifier(cascade_path)
+                if face_cascade.empty():
+                    face_cascade = None
+            except Exception:
+                face_cascade = None
+        return face_cascade
+
+    ghost_frames = []
 
     audio_meter = None
     if audio_reactive:
@@ -630,6 +778,22 @@ def run_webcam_ascii(
                     break
                 elif key in ("c", "C"):
                     color = not color
+                elif key in ("p", "P"):
+                    props_cycle = ["none", "sunglasses", "hat", "both"]
+                    try:
+                        idx = props_cycle.index(face_props)
+                        face_props = props_cycle[(idx + 1) % len(props_cycle)]
+                    except ValueError:
+                        face_props = "none"
+                elif key in ("t", "T"):
+                    themes_cycle = [None] + list(THEMES.keys())
+                    try:
+                        idx = themes_cycle.index(theme_bg)
+                        theme_bg = themes_cycle[(idx + 1) % len(themes_cycle)]
+                    except ValueError:
+                        theme_bg = None
+                elif key in ("g", "G"):
+                    ghost = not ghost
                 elif key in ("+", "="):
                     zoom_level = min(10.0, zoom_level * 1.1)
                 elif key == "-":
@@ -677,8 +841,33 @@ def run_webcam_ascii(
                     cv2.accumulateWeighted(frame, prev_frame_float, 1.0 - motion_blur_strength)
                 frame = cv2.convertScaleAbs(prev_frame_float)
 
+            # --- Phantom Ghosting Trail ---
+            if ghost and np is not None:
+                ghost_frames.append(frame.astype(float))
+                while len(ghost_frames) > ghost_len:
+                    ghost_frames.pop(0)
+                
+                blended = np.zeros_like(frame, dtype=float)
+                for idx, f in enumerate(reversed(ghost_frames)):
+                    weight = ghost_decay ** idx
+                    blended = np.maximum(blended, f * weight)
+                frame = blended.astype(np.uint8)
+
+            # --- Face Tracking ---
+            faces = []
+            if face_props != "none":
+                cascade = get_face_cascade()
+                if cascade is not None:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(frame_rgb)
+
+            # Draw face props onto the PIL image
+            if face_props != "none" and len(faces) > 0:
+                pil_image = draw_face_props(pil_image, faces, face_props)
+
             ascii_art = convert_image_to_ascii_image(
                 pil_image,
                 new_width=new_width,
@@ -694,7 +883,10 @@ def run_webcam_ascii(
                 edge_brightness=edge_brightness,
                 avoid_space=avoid_space,
                 braille=braille,
-                braille_threshold=braille_threshold
+                braille_threshold=braille_threshold,
+                theme_bg=theme_bg,
+                blend_mode=blend_mode,
+                blend_threshold=blend_threshold
             )
 
             if glitch or audio_reactive:
@@ -725,6 +917,10 @@ def run_webcam_ascii(
             # Append Clear to End of Line to avoid manual space padding which breaks with ANSI codes
             padded_lines = [line + "\033[K" for line in lines]
             
+            # Add reverse video status bar at the bottom
+            status_line = f"\033[7m Controls: Q=quit | C=color | +/-=zoom | P=props ({face_props}) | T=bg theme ({theme_bg or 'none'}) | G=ghosting ({'on' if ghost else 'off'}) \033[0m\033[K"
+            padded_lines.append(status_line)
+
             if len(padded_lines) < last_rows:
                 padded_lines.extend(["\033[K"] * (last_rows - len(padded_lines)))
 
@@ -750,7 +946,10 @@ def run_webcam_ascii(
                     edge_brightness=edge_brightness,
                     avoid_space=avoid_space,
                     braille=braille,
-                    braille_threshold=braille_threshold
+                    braille_threshold=braille_threshold,
+                    theme_bg=theme_bg,
+                    blend_mode=blend_mode,
+                    blend_threshold=blend_threshold
                 )
                 frame_img = render_ascii_frame(record_ascii, record_font)
                 if frame_img is not None:
@@ -816,6 +1015,19 @@ def main():
     parser.add_argument("--motion-blur-strength", type=float, default=0.5, help="Motion blur strength (0.0 to 1.0, default 0.5)")
     parser.add_argument("--matrix", action="store_true", help="Enable Matrix digital rain effect")
     
+    # Face-Tracking Props
+    parser.add_argument("--face-props", choices=["none", "sunglasses", "hat", "both"], default="none", help="Enable face-tracking ASCII props (default: none)")
+    
+    # Theme Blending
+    parser.add_argument("--theme-bg", choices=THEMES.keys(), default=None, help="Theme for background when blending two themes")
+    parser.add_argument("--blend-mode", choices=["brightness", "edge"], default="brightness", help="How to separate foreground and background for dual themes")
+    parser.add_argument("--blend-threshold", type=int, default=None, help="Threshold value for dual theme blending (0-255)")
+    
+    # Ghosting Trail
+    parser.add_argument("--ghost", action="store_true", help="Enable phantom ghosting trail in webcam mode")
+    parser.add_argument("--ghost-len", type=int, default=10, help="Ghost trail buffer size (default: 10)")
+    parser.add_argument("--ghost-decay", type=float, default=0.75, help="Ghost trail decay rate (default: 0.75)")
+    
     args = parser.parse_args()
 
     height_scale = args.height_scale
@@ -863,7 +1075,14 @@ def main():
             audio_device=args.audio_device,
             motion_blur=args.motion_blur,
             motion_blur_strength=args.motion_blur_strength,
-            matrix_effect=args.matrix
+            matrix_effect=args.matrix,
+            face_props=args.face_props,
+            theme_bg=args.theme_bg,
+            blend_mode=args.blend_mode,
+            blend_threshold=args.blend_threshold,
+            ghost=args.ghost,
+            ghost_len=args.ghost_len,
+            ghost_decay=args.ghost_decay
         )
         return
 
@@ -886,7 +1105,10 @@ def main():
         edges=args.edges,
         export_html=args.html,
         braille=args.braille,
-        braille_threshold=args.braille_threshold
+        braille_threshold=args.braille_threshold,
+        theme_bg=args.theme_bg,
+        blend_mode=args.blend_mode,
+        blend_threshold=args.blend_threshold
     )
     
     if ascii_art:
